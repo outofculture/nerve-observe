@@ -10,24 +10,7 @@ from detectron2.structures import polygons_to_bitmask, BoxMode
 from numpy import array, zeros
 import cv2
 
-
-def polygon_to_mask(polygon: list, shape=(520, 704)):
-    """
-    polygon: a list of [[x1, y1], [x2, y2],....]
-    shape: shape of bitmask
-    Return: RLE type of mask
-    """
-    # add 0.25 can keep the pixels before and after the conversion unchanged
-    polygon = [x_or_y for coords in polygon for x_or_y in coords]
-    mask = polygons_to_bitmask([np.asarray(polygon) + 0.25], shape[0], shape[1])
-    # rle = mask_util.encode(np.asfortranarray(mask))
-    # return rle
-    return mask
-
-
-def bounding_box(points):
-    """ return the bounding box of a set of points"""
-    return np.array([np.min(points, axis=0), np.max(points, axis=0)])
+from detectron2_tutorial import polygon_to_mask, bounding_box
 
 
 def main(params):
@@ -41,7 +24,7 @@ def main(params):
     # load the regions from across the _entire_ time-series
     with open("regions/regions.json") as f:
         regions = json.load(f)  # list of {id: int, coordinates: List[List[int, int]]}.
-        # id is arbitrary. coordinates describe the neuron's polygon boundary
+        # id is arbitrary. coordinates describe the neuron's polygon boundary.
 
     masks_and_bboxes_and_regions = array(
         [(polygon_to_mask(s["coordinates"], dims), bounding_box(s["coordinates"]), s["coordinates"]) for s in regions]
@@ -56,7 +39,7 @@ def main(params):
             if np.mean(img[mask]) > cutoff
         ]
 
-    # todo load data
+    # todo load data into COCO format
     # todo train transformer
     # todo save model
     # todo test model

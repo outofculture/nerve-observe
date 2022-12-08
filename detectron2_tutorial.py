@@ -24,10 +24,11 @@ import json
 import os
 import random
 from glob import glob
+from typing import List
 
 import cv2
 import detectron2
-
+import numpy as np
 import torch
 from detectron2 import model_zoo
 from detectron2.config import get_cfg
@@ -36,10 +37,12 @@ from detectron2.data import build_detection_test_loader
 from detectron2.engine import DefaultPredictor
 from detectron2.engine import DefaultTrainer
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
-from detectron2.structures import BoxMode
+from detectron2.structures import BoxMode, polygons_to_bitmask
 from detectron2.utils.logger import setup_logger
 from detectron2.utils.visualizer import ColorMode
 from detectron2.utils.visualizer import Visualizer
+from pycocotools import mask as mask_utils
+from tqdm import tqdm
 
 TORCH_VERSION = ".".join(torch.__version__.split(".")[:2])
 CUDA_VERSION = torch.__version__.split("+")[-1]
@@ -57,7 +60,7 @@ We first download an image from the COCO dataset:
 
 # !wget http://images.cocodataset.org/val2017/000000439715.jpg -q -O input.jpg
 example_im = cv2.imread("./data/neurofinder.00.00/images/image00000.tiff")
-cv2.imshow(example_im)
+cv2.imshow("example image", example_im)
 
 """Then, we create a detectron2 config and a detectron2 `DefaultPredictor` to run inference on this image."""
 
@@ -77,57 +80,97 @@ print(outputs["instances"].pred_boxes)
 # We can use `Visualizer` to draw the predictions on the image.
 v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
 out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-cv2.imshow(out.get_image()[:, :, ::-1])
+cv2.imshow("detected objects", out.get_image()[:, :, ::-1])
 
 """Register the neuron dataset to detectron2, following the
 [detectron2 custom dataset tutorial](https://detectron2.readthedocs.io/tutorials/datasets.html).
-Here, the dataset is in its custom format, therefore we write a function to parse it and prepare it into detectron2's
-standard format. User should write such a function when using a dataset in custom format. See the tutorial for more
-details.
-
+Here, the dataset is in its custom format, therefore we write a function to parse it and prepare it into COCO
+standard format. User should write such a function when using a dataset in custom format. 
 """
 
-# if your dataset is in COCO format, this cell can be replaced by the following three lines:
+# if your dataset is already in COCO format, this can be replaced by the following three lines:
 # from detectron2.data.datasets import register_coco_instances
 # register_coco_instances("my_dataset_train", {}, "json_annotation_train.json", "path/to/image/dir")
 # register_coco_instances("my_dataset_val", {}, "json_annotation_val.json", "path/to/image/dir")
 
 
-def get_neuron_dicts(img_dir):  # contains e.g. neurofinder.00.00/
-    for plate_dir in glob("neurofinder*"):
+def polygon_to_mask(polygon: List[List], shape):
+    """
+    polygon: a list of [[x1, y1], [x2, y2],....]
+    shape: shape of bitmask
+    Return: RLE type of mask
+    source: https://www.kaggle.com/code/linrds/convert-rle-to-polygons
+    """
+    polygon = [x_or_y for coords in polygon for x_or_y in coords]
+    return polygons_to_bitmask([np.asarray(polygon) + 0.25], shape[0], shape[1])
+
+
+def polygon_to_rle(polygon: List, shape):
+    m = polygon_to_mask(polygon, shape)
+    return mask_utils.encode(np.asfortranarray(m))
+
+
+def bounding_box(points):
+    """ return the bounding box of a set of points"""
+    return np.array([*np.min(points, axis=0), *np.max(points, axis=0)])
+
+
+def region_info(region: List, dims: List):
+    return {
+        "mask": polygon_to_mask(region, dims),
+        "bbox": bounding_box(region),
+        "rle": polygon_to_rle(region, dims),
+        "polygon": region,
+    }
+
+
+def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
+    dataset_dicts = []
+    cutoff = 1.4  # todo: so arbitrary! can we get this value from the image somehow?
+    for plate_dir in glob(os.path.join(data_dir, "neurofinder*")):
+        img_files = sorted(glob(os.path.join(plate_dir, "images", "*.tiff")))[:20]
+        dims = cv2.imread(img_files[0]).shape
+        assert dims, "could not load images from specified directory (should be e.g. neurofinder.00.00)"
+
+        # the regions are from across the _entire_ time-series
         annot_file = os.path.join(plate_dir, "regions", "regions.json")
         with open(annot_file) as f:
-            regions = json.load(f)  # list of dicts with {id, coordinates}
+            # list of {id: int, coordinates: List[List[int, int]]}.
+            # id is arbitrary. coordinates describe the neuron's polygon boundary.
+            regions = [region_info(s["coordinates"], dims) for s in json.load(f)]
 
-    dataset_dicts = []
-    radius = 30
-    for annot in regions:
-        dirname = os.path.join(img_dir, "images")
-        filename = os.path.join(dirname, "image00000.tiff")
-        height, width = cv2.imread(filename).shape[:2]
+        with tqdm(total=len(img_files)) as pbar:
+            for img in img_files:
+                img_data = cv2.imread(img)
+                annotations = []
+                for info in regions:
+                    if np.mean(img_data[info["mask"]]) > cutoff:
+                        annotations.append({
+                            "mask": info["mask"],
+                            "bbox": info["bbox"],
+                            "bbox_mode": BoxMode.XYXY_ABS,
+                            "segmentation": info["polygon"],
+                            "category_id": 0,
+                            "iscrowd": False,  # todo: what does this mean?
+                        })
 
-        record = {"dir_name": dirname, "image_id": img_dir, "height": height, "width": width}
+                    # which regions apply to this image
 
-        annos = annot["coordinates"]
-        objs = []
-        for px, py in annos:
-            obj = {
-                "bbox": [px - radius, py - radius, px + radius, py + radius],
-                "bbox_mode": BoxMode.XYXY_ABS,
-                # "segmentation": [poly],
-                "category_id": 0,
-                # "iscrowd": len(matching_regions) > 1,
+                dataset_dicts.append({
+                    "image_id": img,
+                    "file_name": img,
+                    "height": dims[0],
+                    "width": dims[1],
+                    "annotations": annotations,
+                })
+                pbar.update(1)
 
-            }
-            objs.append(obj)
-        record["annotations"] = objs
-        dataset_dicts.append(record)
     return dataset_dicts
 
 
-for d in ["train"]:  # ... "val"?
-    DatasetCatalog.register(f"neuron_{d}", lambda x=d: get_neuron_dicts("data/"))
-    MetadataCatalog.get(f"neuron_{d}").set(thing_classes=["neuron"])
+d = "train"  # todo "val"
+DatasetCatalog.register(f"neuron_{d}", lambda x=d: get_neuron_dicts("data"))
+MetadataCatalog.get(f"neuron_{d}").set(thing_classes=["neuron"])
 neuron_metadata = MetadataCatalog.get("neuron_train")
 
 
@@ -137,12 +180,14 @@ training set:
 
 """
 
-training_dicts = get_neuron_dicts("neuron/train")
+# todo for simpler verification, put this into its own script, and just have the work up until now save to a file.
+training_dicts = get_neuron_dicts("data")
 for d in random.sample(training_dicts, 3):
     img = cv2.imread(d["file_name"])
     visualizer = Visualizer(img[:, :, ::-1], metadata=neuron_metadata, scale=0.5)
     out = visualizer.draw_dataset_dict(d)
-    cv2.imshow(out.get_image()[:, :, ::-1])
+    cv2.imshow("random output", out.get_image()[:, :, ::-1])
+
 
 """## Train!
 
@@ -212,7 +257,7 @@ for d in random.sample(val_dicts, 3):
         instance_mode=ColorMode.IMAGE_BW,  # remove the colors of unsegmented pixels. segmentation models only.
     )
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-    cv2.imshow(out.get_image()[:, :, ::-1])
+    cv2.imshow("window name", out.get_image()[:, :, ::-1])
 
 """We can also evaluate its performance using AP metric implemented in COCO API.
 This gives an AP of ~70. Not bad!
@@ -237,7 +282,7 @@ predictor = DefaultPredictor(cfg)
 outputs = predictor(example_im)
 v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
 out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-cv2.imshow(out.get_image()[:, :, ::-1])
+cv2.imshow("keypoints what?", out.get_image()[:, :, ::-1])
 
 # Inference with a panoptic segmentation model
 cfg = get_cfg()
@@ -247,31 +292,4 @@ predictor = DefaultPredictor(cfg)
 panoptic_seg, segments_info = predictor(example_im)["panoptic_seg"]
 v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
 out = v.draw_panoptic_seg_predictions(panoptic_seg.to("cpu"), segments_info)
-cv2.imshow(out.get_image()[:, :, ::-1])
-
-"""# Run panoptic segmentation on a video"""
-
-# This is the video we're going to process
-# from IPython.display import YouTubeVideo, display
-# video = YouTubeVideo("ll8TgCZ0plk", width=500)
-# display(video)
-
-# Install dependencies, download the video, and crop 5 seconds for processing
-# !pip install youtube-dl
-# !youtube-dl https://www.youtube.com/watch?v=ll8TgCZ0plk -f 22 -o video.mp4
-# !ffmpeg -i video.mp4 -t 00:00:06 -c:v copy video-clip.mp4
-
-# Commented out IPython magic to ensure Python compatibility.
-# Run frame-by-frame inference demo on this video (takes 3-4 minutes) with the "demo.py" tool we provided in the repo.
-# !git clone https://github.com/facebookresearch/detectron2
-
-# Note: this is currently BROKEN due to missing codec. See https://github.com/facebookresearch/detectron2/issues/2901
-# for workaround.
-# %run detectron2/demo/demo.py --config-file detectron2/configs/COCO-PanopticSegmentation/panoptic_fpn_R_101_3x.yaml \
-#   --video-input video-clip.mp4 --confidence-threshold 0.6 --output video-output.mkv \
-#   --opts MODEL.WEIGHTS detectron2://COCO-PanopticSegmentation/panoptic_fpn_R_101_3x/139514519/model_final_cafdb1.pkl
-
-# Download the results
-# from google.colab import files;
-#
-# files.download('video-output.mkv')
+cv2.imshow("segmentation what?", out.get_image()[:, :, ::-1])
