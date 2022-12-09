@@ -34,16 +34,15 @@ import torch
 from detectron2 import model_zoo
 from detectron2.config import get_cfg
 from detectron2.data import MetadataCatalog, DatasetCatalog
-from detectron2.data import build_detection_test_loader
 from detectron2.engine import DefaultPredictor
 from detectron2.engine import DefaultTrainer
-from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 from detectron2.structures import BoxMode, polygons_to_bitmask
 from detectron2.utils.logger import setup_logger
-from detectron2.utils.visualizer import ColorMode
 from detectron2.utils.visualizer import Visualizer
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
+
+from cfg import cfg
 
 TORCH_VERSION = ".".join(torch.__version__.split(".")[:2])
 CUDA_VERSION = torch.__version__.split("+")[-1]
@@ -54,38 +53,38 @@ print("detectron2:", detectron2.__version__)
 # Setup detectron2 logger
 setup_logger()
 
-"""# Run a pre-trained detectron2 model
-
-We first download an image from the COCO dataset:
-"""
-
-# !wget http://images.cocodataset.org/val2017/000000439715.jpg -q -O input.jpg
-example_im = cv2.imread("./data/neurofinder.00.00/images/image00000.tiff")
-cv2.imshow("here's what we're working with", example_im)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
-
-"""Then, we create a detectron2 config and a detectron2 `DefaultPredictor` to run inference on this image."""
-
-cfg = get_cfg()
-# add project-specific config (e.g., TensorMask) here if you're not running a model in detectron2's core library
-cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # set threshold for this model
-# Find a model from detectron2's model zoo. You can use the https://dl.fbaipublicfiles... url as well
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
-predictor = DefaultPredictor(cfg)
-outputs = predictor(example_im)
-
-# look at the outputs. See https://detectron2.readthedocs.io/tutorials/models.html#model-output-format for specification
-print(outputs["instances"].pred_classes)
-print(outputs["instances"].pred_boxes)
-
-# We can use `Visualizer` to draw the predictions on the image.
-v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
-out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-cv2.imshow("untrained detection (should not find anything)", out.get_image()[:, :, ::-1])
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+# """# Run a pre-trained detectron2 model
+#
+# We first download an image from the COCO dataset:
+# """
+#
+# # !wget http://images.cocodataset.org/val2017/000000439715.jpg -q -O input.jpg
+# example_im = cv2.imread("./data/neurofinder.00.00/images/image00000.tiff")
+# cv2.imshow("here's what we're working with", example_im)
+# cv2.waitKey(0)
+# cv2.destroyAllWindows()
+#
+# """Then, we create a detectron2 config and a detectron2 `DefaultPredictor` to run inference on this image."""
+#
+# test_cfg = get_cfg()
+# # add project-specific config (e.g., TensorMask) here if you're not running a model in detectron2's core library
+# test_cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
+# test_cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # set threshold for this model
+# # Find a model from detectron2's model zoo. You can use the https://dl.fbaipublicfiles... url as well
+# test_cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
+# predictor = DefaultPredictor(test_cfg)
+# outputs = predictor(example_im)
+#
+# # look at the outputs. See https://detectron2.readthedocs.io/tutorials/models.html#model-output-format for specification
+# print(outputs["instances"].pred_classes)
+# print(outputs["instances"].pred_boxes)
+#
+# # We can use `Visualizer` to draw the predictions on the image.
+# v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(test_cfg.DATASETS.TRAIN[0]), scale=1.2)
+# out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
+# cv2.imshow("untrained detection (should not find anything)", out.get_image()[:, :, ::-1])
+# cv2.waitKey(0)
+# cv2.destroyAllWindows()
 
 """Register the neuron dataset to detectron2, following the
 [detectron2 custom dataset tutorial](https://detectron2.readthedocs.io/tutorials/datasets.html).
@@ -151,134 +150,59 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
                 img_num = re.sub(r"[^0-9]+", "", img)
                 img_num = plate_num * (10 ** len(img_num)) + int(img_num)  # they're nicely zero-padded
                 img_data = cv2.imread(img)
-                annotations = []
-                for info in regions:
-                    if np.mean(img_data[info["mask"]]) > cutoff:
-                        annotations.append({
-                            "image_id": img_num,
-                            "mask": info["mask"],
-                            "bbox": info["bbox"],
-                            "bbox_mode": BoxMode.XYXY_ABS,
-                            "segmentation": info["polygon"],
-                            "category_id": 0,
-                            "iscrowd": False,
-                        })
+                annotations = [
+                    {
+                        "image_id": img_num,
+                        "mask": info["mask"],
+                        "bbox": info["bbox"],
+                        "bbox_mode": BoxMode.XYXY_ABS,
+                        "segmentation": info["polygon"],
+                        "category_id": 0,
+                        "iscrowd": False,
+                    }
+                    for info in regions
+                    if np.mean(img_data[info["mask"]]) > cutoff
+                ]
 
-                    # which regions apply to this image
-
-                dataset_dicts.append({
-                    "id": img_num,
-                    "file_name": img,
-                    "height": dims[0],
-                    "width": dims[1],
-                    "annotations": annotations,
-                })
+                dataset_dicts.append(
+                    {"id": img_num, "file_name": img, "height": dims[0], "width": dims[1], "annotations": annotations}
+                )
                 pbar.update(1)
 
     return dataset_dicts
 
 
-# todo "val"
-DatasetCatalog.register(f"neuron_train", lambda x="train": get_neuron_dicts("data"))
-MetadataCatalog.get(f"neuron_train").set(thing_classes=["neuron"])
+DatasetCatalog.register("neuron_train", lambda x="train": get_neuron_dicts("data"))
+MetadataCatalog.get("neuron_train").set(thing_classes=["neuron"])
+# DatasetCatalog.register("neuron_val", lambda x="val": get_neuron_dicts("data/val"))
+# MetadataCatalog.get("neuron_val").set(thing_classes=["neuron"])
+
 neuron_metadata = MetadataCatalog.get("neuron_train")
-DatasetCatalog.register(f"neuron_val", lambda x="val": get_neuron_dicts("data/val"))
-MetadataCatalog.get(f"neuron_val").set(thing_classes=["neuron"])
 
 
-"""To verify the dataset is in correct format, let's visualize the annotations of randomly selected samples in the
-training set:
+if __name__ == "__main__":
+    """To verify the dataset is in correct format, let's visualize the annotations of randomly selected samples in the
+    training set:
+    """
+    training_dicts = get_neuron_dicts("data")
+    for d in random.sample(training_dicts, 2):
+        img = cv2.imread(d["file_name"])
+        visualizer = Visualizer(img[:, :, ::-1], metadata=neuron_metadata, scale=0.5)
+        out = visualizer.draw_dataset_dict(d)
+        cv2.imshow("training data", img)
+        cv2.imshow("annotations (do you see corresponding smudges?)", out.get_image()[:, :, ::-1])
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
+    """## Train!
 
-"""
+    Now, let's fine-tune a COCO-pretrained R50-FPN Mask R-CNN model on the neuron dataset. It takes ~2 minutes to train 300
+    iterations on a P100 GPU.
+    """
+    trainer = DefaultTrainer(cfg)
+    trainer.resume_or_load(resume=False)
+    trainer.train()
 
-training_dicts = get_neuron_dicts("data")
-for d in random.sample(training_dicts, 2):
-    img = cv2.imread(d["file_name"])
-    visualizer = Visualizer(img[:, :, ::-1], metadata=neuron_metadata, scale=0.5)
-    out = visualizer.draw_dataset_dict(d)
-    cv2.imshow("training data", img)
-    cv2.imshow("annotations (do you see corresponding smudges?)", out.get_image()[:, :, ::-1])
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-"""## Train!
-
-Now, let's fine-tune a COCO-pretrained R50-FPN Mask R-CNN model on the neuron dataset. It takes ~2 minutes to train 300
-iterations on a P100 GPU.
-
-"""
-
-
-cfg = get_cfg()
-cfg.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-cfg.DATASETS.TRAIN = ("neuron_train",)
-cfg.DATASETS.TEST = ()
-cfg.DATALOADER.NUM_WORKERS = 2
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(
-    "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
-)  # Let training initialize from model zoo
-cfg.SOLVER.IMS_PER_BATCH = 2  # This is the real "batch size" commonly known to deep learning people
-cfg.SOLVER.BASE_LR = 0.00025  # pick a good LR
-cfg.SOLVER.MAX_ITER = (
-    300  # 300 iterations seems good enough for this toy dataset; you will need to train longer for a practical dataset
-)
-cfg.SOLVER.STEPS = []  # do not decay learning rate
-cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = (
-    128  # The "RoIHead batch size". 128 is faster, and good enough for this toy dataset (default: 512)
-)
-cfg.MODEL.ROI_HEADS.NUM_CLASSES = 1  # only has one class (neuron).
-# (see https://detectron2.readthedocs.io/tutorials/datasets.html#update-the-config-for-new-datasets)
-# NOTE: this config means the number of classes, but a few popular unofficial tutorials incorrect uses
-# num_classes+1 here.
-
-os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
-trainer = DefaultTrainer(cfg)
-trainer.resume_or_load(resume=False)
-trainer.train()
-
-# Commented out IPython magic to ensure Python compatibility.
-# Look at training curves in tensorboard:
-# %load_ext tensorboard
-# %tensorboard --logdir output
-
-"""## Inference & evaluation using the trained model
-Now, let's run inference with the trained model on the neuron validation dataset. First, let's create a predictor using
-the model we just trained:
-
-
-"""
-
-# Inference should use the config with parameters that are used in training
-# cfg now already contains everything we've set previously. We changed it a bit for inference:
-cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")  # path to the model we just trained
-cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.7  # set a custom testing threshold
-predictor = DefaultPredictor(cfg)
-
-"""Then, we randomly select several samples to visualize the prediction results."""
-
-validation_images = glob("data/val/neurofinder*/images/*tiff")
-for d in random.sample(validation_images, 3):
-    example_im = cv2.imread(d)
-    # format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format
-    outputs = predictor(example_im)
-    v = Visualizer(
-        example_im[:, :, ::-1],
-        metadata=neuron_metadata,
-        scale=0.5,
-        instance_mode=ColorMode.IMAGE_BW,  # remove the colors of unsegmented pixels. segmentation models only.
-    )
-    out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-    cv2.imshow("validation data", example_im)
-    cv2.imshow("predicted neurons", out.get_image()[:, :, ::-1])
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-"""We can also evaluate its performance using AP metric implemented in COCO API.
-This gives an AP of ~70. Not bad!
-"""
-
-evaluator = COCOEvaluator("neuron_val", output_dir="./output")
-val_loader = build_detection_test_loader(cfg, "neuron_val")
-print(inference_on_dataset(predictor.model, val_loader, evaluator))
-# another equivalent way to evaluate the model is to use `trainer.test`
+    # Look at training curves in tensorboard?
+    # %load_ext tensorboard
+    # %tensorboard --logdir output
