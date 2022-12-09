@@ -23,6 +23,7 @@ access to this tutorial.
 import json
 import os
 import random
+import re
 from glob import glob
 from typing import List
 
@@ -60,7 +61,9 @@ We first download an image from the COCO dataset:
 
 # !wget http://images.cocodataset.org/val2017/000000439715.jpg -q -O input.jpg
 example_im = cv2.imread("./data/neurofinder.00.00/images/image00000.tiff")
-cv2.imshow("example image", example_im)
+cv2.imshow("here's what we're working with", example_im)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
 
 """Then, we create a detectron2 config and a detectron2 `DefaultPredictor` to run inference on this image."""
 
@@ -80,7 +83,9 @@ print(outputs["instances"].pred_boxes)
 # We can use `Visualizer` to draw the predictions on the image.
 v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
 out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-cv2.imshow("detected objects", out.get_image()[:, :, ::-1])
+cv2.imshow("untrained detection (should not find anything)", out.get_image()[:, :, ::-1])
+cv2.waitKey(0)
+cv2.destroyAllWindows()
 
 """Register the neuron dataset to detectron2, following the
 [detectron2 custom dataset tutorial](https://detectron2.readthedocs.io/tutorials/datasets.html).
@@ -116,11 +121,12 @@ def bounding_box(points):
 
 
 def region_info(region: List, dims: List):
+    assert len(region) > 2, f"coordinate list for a polygon must have at least 3 points: {region}"
     return {
         "mask": polygon_to_mask(region, dims),
         "bbox": bounding_box(region),
         "rle": polygon_to_rle(region, dims),
-        "polygon": region,
+        "polygon": [[x_or_y + 0.5 for coords in region for x_or_y in coords]],
     }
 
 
@@ -128,7 +134,8 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
     dataset_dicts = []
     cutoff = 1.4  # todo: so arbitrary! can we get this value from the image somehow?
     for plate_dir in glob(os.path.join(data_dir, "neurofinder*")):
-        img_files = sorted(glob(os.path.join(plate_dir, "images", "*.tiff")))[:20]
+        plate_num = int(re.sub(r"[^0-9]+", "", plate_dir))
+        img_files = sorted(glob(os.path.join(plate_dir, "images", "*.tiff")))[:40]
         dims = cv2.imread(img_files[0]).shape
         assert dims, "could not load images from specified directory (should be e.g. neurofinder.00.00)"
 
@@ -141,23 +148,26 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
 
         with tqdm(total=len(img_files)) as pbar:
             for img in img_files:
+                img_num = re.sub(r"[^0-9]+", "", img)
+                img_num = plate_num * (10 ** len(img_num)) + int(img_num)  # they're nicely zero-padded
                 img_data = cv2.imread(img)
                 annotations = []
                 for info in regions:
                     if np.mean(img_data[info["mask"]]) > cutoff:
                         annotations.append({
+                            "image_id": img_num,
                             "mask": info["mask"],
                             "bbox": info["bbox"],
                             "bbox_mode": BoxMode.XYXY_ABS,
                             "segmentation": info["polygon"],
                             "category_id": 0,
-                            "iscrowd": False,  # todo: what does this mean?
+                            "iscrowd": False,
                         })
 
                     # which regions apply to this image
 
                 dataset_dicts.append({
-                    "image_id": img,
+                    "id": img_num,
                     "file_name": img,
                     "height": dims[0],
                     "width": dims[1],
@@ -168,10 +178,12 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
     return dataset_dicts
 
 
-d = "train"  # todo "val"
-DatasetCatalog.register(f"neuron_{d}", lambda x=d: get_neuron_dicts("data"))
-MetadataCatalog.get(f"neuron_{d}").set(thing_classes=["neuron"])
+# todo "val"
+DatasetCatalog.register(f"neuron_train", lambda x="train": get_neuron_dicts("data"))
+MetadataCatalog.get(f"neuron_train").set(thing_classes=["neuron"])
 neuron_metadata = MetadataCatalog.get("neuron_train")
+DatasetCatalog.register(f"neuron_val", lambda x="val": get_neuron_dicts("data/val"))
+MetadataCatalog.get(f"neuron_val").set(thing_classes=["neuron"])
 
 
 """To verify the dataset is in correct format, let's visualize the annotations of randomly selected samples in the
@@ -180,14 +192,15 @@ training set:
 
 """
 
-# todo for simpler verification, put this into its own script, and just have the work up until now save to a file.
 training_dicts = get_neuron_dicts("data")
-for d in random.sample(training_dicts, 3):
+for d in random.sample(training_dicts, 2):
     img = cv2.imread(d["file_name"])
     visualizer = Visualizer(img[:, :, ::-1], metadata=neuron_metadata, scale=0.5)
     out = visualizer.draw_dataset_dict(d)
-    cv2.imshow("random output", out.get_image()[:, :, ::-1])
-
+    cv2.imshow("training data", img)
+    cv2.imshow("annotations (do you see corresponding smudges?)", out.get_image()[:, :, ::-1])
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 """## Train!
 
@@ -244,12 +257,11 @@ predictor = DefaultPredictor(cfg)
 
 """Then, we randomly select several samples to visualize the prediction results."""
 
-val_dicts = get_neuron_dicts("neuron/val")
-for d in random.sample(val_dicts, 3):
-    example_im = cv2.imread(d["file_name"])
-    outputs = predictor(
-        example_im
-    )  # format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format
+validation_images = glob("data/val/neurofinder*/images/*tiff")
+for d in random.sample(validation_images, 3):
+    example_im = cv2.imread(d)
+    # format is documented at https://detectron2.readthedocs.io/tutorials/models.html#model-output-format
+    outputs = predictor(example_im)
     v = Visualizer(
         example_im[:, :, ::-1],
         metadata=neuron_metadata,
@@ -257,7 +269,10 @@ for d in random.sample(val_dicts, 3):
         instance_mode=ColorMode.IMAGE_BW,  # remove the colors of unsegmented pixels. segmentation models only.
     )
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-    cv2.imshow("window name", out.get_image()[:, :, ::-1])
+    cv2.imshow("validation data", example_im)
+    cv2.imshow("predicted neurons", out.get_image()[:, :, ::-1])
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 """We can also evaluate its performance using AP metric implemented in COCO API.
 This gives an AP of ~70. Not bad!
@@ -267,29 +282,3 @@ evaluator = COCOEvaluator("neuron_val", output_dir="./output")
 val_loader = build_detection_test_loader(cfg, "neuron_val")
 print(inference_on_dataset(predictor.model, val_loader, evaluator))
 # another equivalent way to evaluate the model is to use `trainer.test`
-
-"""# Other types of builtin models
-
-We showcase simple demos of other types of models below:
-"""
-
-# Inference with a keypoint detection model
-cfg = get_cfg()  # get a fresh new config
-cfg.merge_from_file(model_zoo.get_config_file("COCO-Keypoints/keypoint_rcnn_R_50_FPN_3x.yaml"))
-cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.7  # set threshold for this model
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Keypoints/keypoint_rcnn_R_50_FPN_3x.yaml")
-predictor = DefaultPredictor(cfg)
-outputs = predictor(example_im)
-v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
-out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-cv2.imshow("keypoints what?", out.get_image()[:, :, ::-1])
-
-# Inference with a panoptic segmentation model
-cfg = get_cfg()
-cfg.merge_from_file(model_zoo.get_config_file("COCO-PanopticSegmentation/panoptic_fpn_R_101_3x.yaml"))
-cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-PanopticSegmentation/panoptic_fpn_R_101_3x.yaml")
-predictor = DefaultPredictor(cfg)
-panoptic_seg, segments_info = predictor(example_im)["panoptic_seg"]
-v = Visualizer(example_im[:, :, ::-1], MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=1.2)
-out = v.draw_panoptic_seg_predictions(panoptic_seg.to("cpu"), segments_info)
-cv2.imshow("segmentation what?", out.get_image()[:, :, ::-1])

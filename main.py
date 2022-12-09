@@ -10,7 +10,7 @@ from detectron2.structures import polygons_to_bitmask, BoxMode
 from numpy import array, zeros
 import cv2
 
-from detectron2_tutorial import polygon_to_mask, bounding_box
+from train import polygon_to_mask, bounding_box
 
 
 def main(params):
