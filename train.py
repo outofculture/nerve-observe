@@ -31,10 +31,7 @@ import cv2
 import detectron2
 import numpy as np
 import torch
-from detectron2 import model_zoo
-from detectron2.config import get_cfg
 from detectron2.data import MetadataCatalog, DatasetCatalog
-from detectron2.engine import DefaultPredictor
 from detectron2.engine import DefaultTrainer
 from detectron2.structures import BoxMode, polygons_to_bitmask
 from detectron2.utils.logger import setup_logger
@@ -131,10 +128,9 @@ def region_info(region: List, dims: List):
 
 def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
     dataset_dicts = []
-    cutoff = 1.4  # todo: so arbitrary! can we get this value from the image somehow?
     for plate_dir in glob(os.path.join(data_dir, "neurofinder*")):
         plate_num = int(re.sub(r"[^0-9]+", "", plate_dir))
-        img_files = sorted(glob(os.path.join(plate_dir, "images", "*.tiff")))[:40]
+        img_files = sorted(glob(os.path.join(plate_dir, "images", "*.tiff")))[:10]
         dims = cv2.imread(img_files[0]).shape
         assert dims, "could not load images from specified directory (should be e.g. neurofinder.00.00)"
 
@@ -150,6 +146,7 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
                 img_num = re.sub(r"[^0-9]+", "", img)
                 img_num = plate_num * (10 ** len(img_num)) + int(img_num)  # they're nicely zero-padded
                 img_data = cv2.imread(img)
+                cutoff = 0.7 + np.mean(img_data)  # todo: so arbitrary!
                 annotations = [
                     {
                         "image_id": img_num,
@@ -189,7 +186,7 @@ if __name__ == "__main__":
         img = cv2.imread(d["file_name"])
         visualizer = Visualizer(img[:, :, ::-1], metadata=neuron_metadata, scale=0.5)
         out = visualizer.draw_dataset_dict(d)
-        cv2.imshow("training data", img)
+        cv2.imshow("training data", img * 2 / np.max(img))
         cv2.imshow("annotations (do you see corresponding smudges?)", out.get_image()[:, :, ::-1])
         cv2.waitKey(0)
         cv2.destroyAllWindows()

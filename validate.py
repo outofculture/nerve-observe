@@ -7,6 +7,7 @@ import random
 from glob import glob
 
 import cv2
+import numpy as np
 from detectron2.data import build_detection_test_loader
 from detectron2.engine import DefaultPredictor
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
@@ -35,16 +36,15 @@ for d in random.sample(validation_images, 3):
         instance_mode=ColorMode.IMAGE_BW,  # remove the colors of unsegmented pixels. segmentation models only.
     )
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-    cv2.imshow("validation data", example_im)
+    cv2.imshow(f"validation data {d}", example_im * 2 / np.max(example_im))
     cv2.imshow("predicted neurons", out.get_image()[:, :, ::-1])
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
 """We can also evaluate its performance using AP metric implemented in COCO API.
-This gives an AP of ~70. Not bad!
 """
 
-evaluator = COCOEvaluator("neuron_val", output_dir="./output")
-val_loader = build_detection_test_loader(cfg, "neuron_val")
+evaluator = COCOEvaluator("neuron_train", output_dir="./output")
+val_loader = build_detection_test_loader(cfg, "neuron_train")
 print(inference_on_dataset(predictor.model, val_loader, evaluator))
 # another equivalent way to evaluate the model is to use `trainer.test`
