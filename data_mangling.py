@@ -45,6 +45,13 @@ def region_info(region: List, dims: List):
     }
 
 
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 def make_coco_annotations(plate_dir: str) -> List[Dict]:
     dataset_dicts = []
     plate_num = int(re.sub(r"[^0-9]+", "", plate_dir))
@@ -70,7 +77,6 @@ def make_coco_annotations(plate_dir: str) -> List[Dict]:
             annotations = [
                 {
                     "image_id": img_num,
-                    "mask": info["mask"],
                     "bbox": info["bbox"],
                     "bbox_mode": BoxMode.XYXY_ABS,
                     "segmentation": info["polygon"],
@@ -98,15 +104,15 @@ def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
         else:
             plate_annots = make_coco_annotations(plate_dir)
             with open(output_file, 'w') as f:
-                json.dump(plate_annots, f)
+                json.dump(plate_annots, f, cls=NumpyEncoder)
             annotations.extend(plate_annots)
 
     return annotations
 
 
 training_dicts = get_neuron_dicts("data")
-# this needs to fit in memory, so take a sample.
-DatasetCatalog.register("neuron_train", lambda x="train": random.sample(training_dicts, 550))
+# DatasetCatalog.register("neuron_train", lambda x="train": random.sample(training_dicts, 2000))
+DatasetCatalog.register("neuron_train", lambda x="train": training_dicts)
 MetadataCatalog.get("neuron_train").set(thing_classes=["neuron"])
 # DatasetCatalog.register("neuron_val", lambda x="val": get_neuron_dicts("data/val"))
 # MetadataCatalog.get("neuron_val").set(thing_classes=["neuron"])
