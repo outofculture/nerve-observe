@@ -21,8 +21,8 @@ def polygon_to_mask(polygon: List[List], shape):
     Return: RLE type of mask
     source: https://www.kaggle.com/code/linrds/convert-rle-to-polygons
     """
-    polygon = [x_or_y for coords in polygon for x_or_y in coords]
-    return polygons_to_bitmask([np.asarray(polygon) + 0.25], shape[0], shape[1])
+    polygon = [x_or_y for coords in polygon for x_or_y in reversed(coords)]
+    return polygons_to_bitmask([np.asarray(polygon)], shape[0], shape[1])
 
 
 def polygon_to_rle(polygon: List, shape):
@@ -41,7 +41,7 @@ def region_info(region: List, dims: List):
         "mask": polygon_to_mask(region, dims),
         "bbox": bounding_box(region),
         "rle": polygon_to_rle(region, dims),
-        "polygon": [[x_or_y + 0.5 for coords in region for x_or_y in coords]],
+        "polygon": [[x_or_y for coords in region for x_or_y in reversed(coords)]],
     }
 
 
@@ -57,12 +57,12 @@ def make_coco_annotations(plate_dir: str) -> List[Dict]:
     plate_num = int(re.sub(r"[^0-9]+", "", plate_dir))
     img_files = glob(os.path.join(plate_dir, "images", "*.tiff"))
     dims = cv2.imread(img_files[0]).shape
-    assert dims, "could not load images from specified directory (should be e.g. neurofinder.00.00)"
+    assert dims, f"could not load images from {plate_dir}/images/*tiff"
 
     # the regions are from across the _entire_ time-series
     with open(os.path.join(plate_dir, "regions", "regions.json")) as f:
         # list of {id: int, coordinates: List[List[int, int]]}.
-        # id is arbitrary. coordinates describe the neuron's polygon boundary.
+        # id is arbitrary. coordinates are backwards: y, x.
         regions = [region_info(s["coordinates"], dims) for s in json.load(f)]
 
     with tqdm(total=len(img_files)) as pbar:
