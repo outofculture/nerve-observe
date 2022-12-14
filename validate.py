@@ -37,7 +37,7 @@ for d in random.sample(validation_images, 3):
     )
     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
     cv2.imshow(f"validation data {d}", example_im * 2 / np.max(example_im))
-    cv2.imshow("predicted neurons", out.get_image()[:, :, ::-1])
+    cv2.imshow("predicted neurons", out.get_image())
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 

@@ -13,16 +13,19 @@ from detectron2.utils.visualizer import Visualizer
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
 
+from shaunna_is_the_best import alt_poly_to_mask
+
 
 def polygon_to_mask(polygon: List[List], shape):
     """
-    polygon: a list of [[x1, y1], [x2, y2],....]
+    polygon: a list of [[x₁, y₁], [x₂, y₂],....]
     shape: shape of bitmask
-    Return: RLE type of mask
+    Return: shape-shaped boolean array with True in all in-poly points
     source: https://www.kaggle.com/code/linrds/convert-rle-to-polygons
     """
-    polygon = [x_or_y for coords in polygon for x_or_y in reversed(coords)]
-    return polygons_to_bitmask([np.asarray(polygon)], shape[0], shape[1])
+    return alt_poly_to_mask(polygon, (shape[0], shape[1]))
+    # polygon = [x_or_y + 0.5 for coords in polygon for x_or_y in reversed(coords)]
+    # return polygons_to_bitmask([np.asarray(polygon)], shape[0], shape[1])
 
 
 def polygon_to_rle(polygon: List, shape):
@@ -56,6 +59,7 @@ def make_coco_annotations(plate_dir: str) -> List[Dict]:
     dataset_dicts = []
     plate_num = int(re.sub(r"[^0-9]+", "", plate_dir))
     img_files = glob(os.path.join(plate_dir, "images", "*.tiff"))
+    # img_files = random.sample(glob(os.path.join(plate_dir, "images", "*.tiff")), 20)
     dims = cv2.imread(img_files[0]).shape
     assert dims, f"could not load images from {plate_dir}/images/*tiff"
 
@@ -70,7 +74,7 @@ def make_coco_annotations(plate_dir: str) -> List[Dict]:
             img_num = re.sub(r"[^0-9]+", "", img)
             img_num = plate_num * (10 ** len(img_num)) + int(img_num)  # they're nicely zero-padded
             img_data = cv2.imread(img)
-            cutoff = 0.7 + np.mean(img_data)
+            cutoff = 1.3 + np.mean(img_data)
             # todo: so arbitrary!
             # todo: account for bleaching?
             # todo: maybe look at the max of the entire time series?
