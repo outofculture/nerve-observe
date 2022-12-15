@@ -2,13 +2,14 @@ import json
 import os
 import random
 import re
+from functools import reduce
 from glob import glob
 from typing import List, Dict
 
 import cv2
 import numpy as np
 from detectron2.data import MetadataCatalog, DatasetCatalog
-from detectron2.structures import polygons_to_bitmask, BoxMode
+from detectron2.structures import BoxMode
 from detectron2.utils.visualizer import Visualizer
 from pycocotools import mask as mask_utils
 from tqdm import tqdm
@@ -74,28 +75,40 @@ def make_coco_annotations(plate_dir: str) -> List[Dict]:
             img_num = re.sub(r"[^0-9]+", "", img)
             img_num = plate_num * (10 ** len(img_num)) + int(img_num)  # they're nicely zero-padded
             img_data = cv2.imread(img)
-            cutoff = 1.3 + np.mean(img_data)
+            non_neuronal_mask = np.logical_not(
+                reduce(lambda mask, i: mask | i["mask"], regions, np.zeros(img_data.shape[:2]).astype(bool))
+            )
+            cutoff = 1.3
+            # todo ooo, what if we looked at the _local_ neighborhood instead of the entire image.
+            # todo maybe even masking out other possible neurons first...
             # todo: so arbitrary!
             # todo: account for bleaching?
             # todo: maybe look at the max of the entire time series?
-            annotations = [
-                {
-                    "image_id": img_num,
-                    "bbox": info["bbox"],
-                    "bbox_mode": BoxMode.XYXY_ABS,
-                    "segmentation": info["polygon"],
-                    "category_id": 0,
-                    "iscrowd": False,
-                }
-                for info in regions
-                if np.mean(img_data[info["mask"]]) > cutoff
-            ]
+            annotations = []
+            for info in regions:
+                local_value = get_local_value(img_data, info, non_neuronal_mask)
+                if np.mean(img_data[info["mask"]]) - local_value > cutoff:
+                    annotations.append({
+                        "image_id": img_num,
+                        "bbox": info["bbox"],
+                        "bbox_mode": BoxMode.XYXY_ABS,
+                        "segmentation": info["polygon"],
+                        "category_id": 0,
+                        "iscrowd": False,
+                    })
 
             dataset_dicts.append(
                 {"id": img_num, "file_name": img, "height": dims[0], "width": dims[1], "annotations": annotations}
             )
             pbar.update(1)
         return dataset_dicts
+
+
+def get_local_value(img_data, info, non_neuronal_mask):
+    local_bbox = (info["bbox"] + [-20, -20, 20, 20]).clip(0)
+    local_mask = non_neuronal_mask[local_bbox[0]: local_bbox[2], local_bbox[1]: local_bbox[3]]
+    local_value = np.mean(img_data[local_bbox[0]: local_bbox[2], local_bbox[1]: local_bbox[3]][local_mask])
+    return local_value
 
 
 def get_neuron_dicts(data_dir):  # contains e.g. neurofinder.00.00/
